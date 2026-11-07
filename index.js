@@ -66,7 +66,8 @@ function writeJson(file, value) {
 }
 
 let birthdays = readJson(BIRTHDAYS_FILE, {});
-let config = readJson(CONFIG_FILE, { channelId: process.env.BIRTHDAY_CHANNEL_ID || null, lastRunDate: null });
+let config = readJson(CONFIG_FILE, { channelId: process.env.BIRTHDAY_CHANNEL_ID || "1553456214963396629", lastRunDate: null });
+if (!config.channelId) config.channelId = process.env.BIRTHDAY_CHANNEL_ID || "1553456214963396629";
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds],
@@ -81,6 +82,10 @@ const commands = [
   new SlashCommandBuilder()
     .setName("birthdays")
     .setDescription("See upcoming birthdays in The Outcasts."),
+  new SlashCommandBuilder()
+    .setName("birthday-list")
+    .setDescription("View every registered birthday (administrators only).")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
   new SlashCommandBuilder()
     .setName("birthday-remove")
     .setDescription("Remove a member's birthday registration.")
@@ -167,6 +172,15 @@ function birthdayWish(userId) {
     .setTimestamp();
 }
 
+function formatAllBirthdays() {
+  return Object.entries(birthdays)
+    .map(([userId, record]) => {
+      const [year, month, day] = record.date.split("-").map(Number);
+      return { userId, day, month, year };
+    })
+    .sort((a, b) => a.month - b.month || a.day - b.day || a.year - b.year);
+}
+
 function formatUpcoming() {
   const today = datePartsInZone();
   const entries = Object.entries(birthdays).map(([userId, record]) => {
@@ -189,6 +203,37 @@ function formatUpcoming() {
     }).format(item.next);
     return `🎂 **${dateText}** — <@${item.userId}>`;
   }).join("\n");
+}
+
+async function ensureBirthdayPanel() {
+  const channelId = process.env.BIRTHDAY_CHANNEL_ID || config.channelId || "1553456214963396629";
+  const channel = await client.channels.fetch(channelId).catch(() => null);
+  if (!channel || !channel.isTextBased() || !channel.messages) {
+    console.error(`Birthday panel channel ${channelId} was not found or is not a text channel.`);
+    return;
+  }
+
+  config.channelId = channelId;
+  writeJson(CONFIG_FILE, config);
+
+  // Avoid reposting the panel every time Railway restarts the bot.
+  const recentMessages = await channel.messages.fetch({ limit: 50 }).catch(error => {
+    console.error("Could not check for an existing birthday panel:", error);
+    return null;
+  });
+  if (!recentMessages) return;
+
+  const existingPanel = recentMessages.find(message =>
+    message.author.id === client.user.id &&
+    message.components.some(row => row.components.some(component => component.customId === "birthday_register"))
+  );
+
+  if (!existingPanel) {
+    await channel.send(olympusPanel());
+    console.log(`🏛️ Birthday registration panel posted in channel ${channelId}.`);
+  } else {
+    console.log(`🏛️ Birthday registration panel already exists in channel ${channelId}.`);
+  }
 }
 
 async function sendTodaysBirthdays() {
@@ -235,6 +280,8 @@ client.once("ready", async () => {
   } catch (error) {
     console.error("Could not register slash commands:", error);
   }
+  // Ensure the registration panel exists in the configured birthday channel.
+  await ensureBirthdayPanel();
   // Check immediately on startup, then every 60 seconds. A date guard prevents duplicates.
   await sendTodaysBirthdays();
   setInterval(() => sendTodaysBirthdays().catch(console.error), 60_000);
@@ -258,6 +305,34 @@ client.on("interactionCreate", async interaction => {
           .setDescription(formatUpcoming())
           .setFooter({ text: "THE OUTCASTS • HALL OF CELEBRATIONS" });
         await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      if (interaction.commandName === "birthday-list") {
+        const entries = formatAllBirthdays();
+        if (!entries.length) {
+          await interaction.reply({
+            content: "🏛️ No birthdays have been registered yet.",
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+
+        // Discord allows up to 10 embeds per message; split long lists safely.
+        const chunks = [];
+        for (let i = 0; i < entries.length; i += 40) chunks.push(entries.slice(i, i + 40));
+        const embeds = chunks.slice(0, 10).map((chunk, index) => {
+          const description = chunk.map(item => {
+            const dateText = `${String(item.day).padStart(2, "0")}-${String(item.month).padStart(2, "0")}-${item.year}`;
+            return `🎂 **${dateText}** — <@${item.userId}>`;
+          }).join("\n");
+          return new EmbedBuilder()
+            .setColor(0xC9A646)
+            .setTitle(index === 0 ? `🏛️ REGISTERED BIRTHDAYS (${entries.length})` : `🏛️ REGISTERED BIRTHDAYS — PAGE ${index + 1}`)
+            .setDescription(description)
+            .setFooter({ text: "THE OUTCASTS • ADMIN BIRTHDAY REGISTER" });
+        });
+        await interaction.reply({ embeds, flags: MessageFlags.Ephemeral });
         return;
       }
 
