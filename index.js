@@ -181,7 +181,26 @@ function formatAllBirthdays() {
     .sort((a, b) => a.month - b.month || a.day - b.day || a.year - b.year);
 }
 
-function formatUpcoming() {
+async function getBirthdayDisplayName(userId, record = {}) {
+  // New registrations keep a name snapshot, so former members never appear as raw IDs.
+  if (record.displayName) return `@${record.displayName}`;
+
+  // Older registrations do not have a saved name. Try Discord's user API once
+  // and save the result for future birthday-list displays.
+  try {
+    const user = await client.users.fetch(userId);
+    const displayName = user.globalName || user.username;
+    record.displayName = displayName;
+    record.username = user.username;
+    birthdays[userId] = record;
+    return `@${displayName}`;
+  } catch (error) {
+    console.warn(`Could not resolve birthday account ${userId}:`, error.message);
+    return 'Former/unknown member';
+  }
+}
+
+async function formatUpcoming() {
   const today = datePartsInZone();
   const entries = Object.entries(birthdays).map(([userId, record]) => {
     const [year, month, day] = record.date.split("-").map(Number);
@@ -197,12 +216,15 @@ function formatUpcoming() {
   }).sort((a, b) => a.next - b.next).slice(0, 15);
 
   if (!entries.length) return "No birthdays have been registered yet.";
-  return entries.map(item => {
+  const lines = await Promise.all(entries.map(async item => {
     const dateText = new Intl.DateTimeFormat("en-GB", {
       timeZone: "UTC", day: "numeric", month: "long"
     }).format(item.next);
-    return `🎂 **${dateText}** — <@${item.userId}>`;
-  }).join("\n");
+    const name = await getBirthdayDisplayName(item.userId, birthdays[item.userId]);
+    return `🎂 **${dateText}** — ${name}`;
+  }));
+  writeJson(BIRTHDAYS_FILE, birthdays);
+  return lines.join("\n");
 }
 
 async function ensureBirthdayPanel() {
@@ -302,7 +324,7 @@ client.on("interactionCreate", async interaction => {
         const embed = new EmbedBuilder()
           .setColor(0xC9A646)
           .setTitle("🏛️ UPCOMING BIRTHDAYS")
-          .setDescription(formatUpcoming())
+          .setDescription(await formatUpcoming())
           .setFooter({ text: "THE OUTCASTS • HALL OF CELEBRATIONS" });
         await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
         return;
@@ -321,18 +343,20 @@ client.on("interactionCreate", async interaction => {
         // Discord allows up to 10 embeds per message; split long lists safely.
         const chunks = [];
         for (let i = 0; i < entries.length; i += 40) chunks.push(entries.slice(i, i + 40));
-        const embeds = chunks.slice(0, 10).map((chunk, index) => {
-          const description = chunk.map(item => {
+        const resolvedEmbeds = await Promise.all(chunks.slice(0, 10).map(async (chunk, index) => {
+          const lines = await Promise.all(chunk.map(async item => {
             const dateText = `${String(item.day).padStart(2, "0")}-${String(item.month).padStart(2, "0")}-${item.year}`;
-            return `🎂 **${dateText}** — <@${item.userId}>`;
-          }).join("\n");
+            const name = await getBirthdayDisplayName(item.userId, birthdays[item.userId]);
+            return `🎂 **${dateText}** — ${name}`;
+          }));
           return new EmbedBuilder()
             .setColor(0xC9A646)
             .setTitle(index === 0 ? `🏛️ REGISTERED BIRTHDAYS (${entries.length})` : `🏛️ REGISTERED BIRTHDAYS — PAGE ${index + 1}`)
-            .setDescription(description)
+            .setDescription(lines.join("\n"))
             .setFooter({ text: "THE OUTCASTS • ADMIN BIRTHDAY REGISTER" });
-        });
-        await interaction.reply({ embeds, flags: MessageFlags.Ephemeral });
+        }));
+        writeJson(BIRTHDAYS_FILE, birthdays);
+        await interaction.reply({ embeds: resolvedEmbeds, flags: MessageFlags.Ephemeral });
         return;
       }
 
@@ -379,6 +403,8 @@ client.on("interactionCreate", async interaction => {
       const previous = birthdays[interaction.user.id];
       birthdays[interaction.user.id] = {
         date: parsed.iso,
+        displayName: interaction.user.globalName || interaction.user.username,
+        username: interaction.user.username,
         registeredAt: new Date().toISOString(),
         updated: Boolean(previous),
       };
