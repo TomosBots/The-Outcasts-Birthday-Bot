@@ -84,8 +84,10 @@ const commands = [
     .setDescription("See upcoming birthdays in The Outcasts."),
   new SlashCommandBuilder()
     .setName("birthday-list")
-    .setDescription("View every registered birthday (administrators only).")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+    .setDescription("View every registered birthday (Head Admins and authorised senior staff).")
+    // Role-based access is checked in the interaction handler below.
+    // Do not require ManageGuild here: Head Admins may not have that permission.
+    .setDefaultMemberPermissions(null),
   new SlashCommandBuilder()
     .setName("birthday-remove")
     .setDescription("Remove a member's birthday registration.")
@@ -331,6 +333,27 @@ client.on("interactionCreate", async interaction => {
       }
 
       if (interaction.commandName === "birthday-list") {
+        // Discord's ManageGuild default blocked Head Admins before the bot
+        // could check their staff role. The command is now visible, and access
+        // is restricted here to authorised staff.
+        const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
+        const hasAuthorisedRole = Boolean(
+          member?.roles?.cache?.some(role =>
+            ["Head Admin", "Senior Admins"].includes(role.name)
+          )
+        );
+        const isServerAdministrator = Boolean(
+          interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)
+        );
+
+        if (!hasAuthorisedRole && !isServerAdministrator) {
+          await interaction.reply({
+            content: "⛔ Only Head Admins, Senior Admins, and server administrators can view the full birthday register.",
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+
         const entries = formatAllBirthdays();
         if (!entries.length) {
           await interaction.reply({
