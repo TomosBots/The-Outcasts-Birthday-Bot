@@ -78,7 +78,8 @@ const commands = [
   new SlashCommandBuilder()
     .setName("birthday-panel")
     .setDescription("Post the Olympus birthday registration panel in this channel.")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+    // Staff role access is checked in the interaction handler.
+    .setDefaultMemberPermissions(null),
   new SlashCommandBuilder()
     .setName("birthdays")
     .setDescription("See upcoming birthdays in The Outcasts."),
@@ -91,7 +92,8 @@ const commands = [
   new SlashCommandBuilder()
     .setName("birthday-remove")
     .setDescription("Remove a member's birthday registration.")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    // Staff role access is checked in the interaction handler.
+    .setDefaultMemberPermissions(null)
     .addUserOption(option =>
       option.setName("member").setDescription("Member whose birthday should be removed").setRequired(true)
     ),
@@ -311,10 +313,35 @@ client.once("ready", async () => {
   setInterval(() => sendTodaysBirthdays().catch(console.error), 60_000);
 });
 
+const AUTHORISED_STAFF_ROLES = [
+  "Head Admin",
+  "Senior Admins",
+  "Moderation Lead",
+  "Moderators",
+];
+
+async function hasBirthdayStaffAccess(interaction) {
+  const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
+  const hasAuthorisedRole = Boolean(
+    member?.roles?.cache?.some(role => AUTHORISED_STAFF_ROLES.includes(role.name))
+  );
+  const isServerAdministrator = Boolean(
+    interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)
+  );
+  return hasAuthorisedRole || isServerAdministrator;
+}
+
 client.on("interactionCreate", async interaction => {
   try {
     if (interaction.isChatInputCommand()) {
       if (interaction.commandName === "birthday-panel") {
+        if (!await hasBirthdayStaffAccess(interaction)) {
+          await interaction.reply({
+            content: "⛔ Only Head Admins, Senior Admins, the Moderation Lead, Moderators, and server administrators can use this command.",
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
         config.channelId = interaction.channelId;
         writeJson(CONFIG_FILE, config);
         await interaction.channel.send(olympusPanel());
@@ -336,19 +363,11 @@ client.on("interactionCreate", async interaction => {
         // Discord's ManageGuild default blocked Head Admins before the bot
         // could check their staff role. The command is now visible, and access
         // is restricted here to authorised staff.
-        const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
-        const hasAuthorisedRole = Boolean(
-          member?.roles?.cache?.some(role =>
-            ["Head Admin", "Senior Admins"].includes(role.name)
-          )
-        );
-        const isServerAdministrator = Boolean(
-          interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)
-        );
+        const hasAccess = await hasBirthdayStaffAccess(interaction);
 
-        if (!hasAuthorisedRole && !isServerAdministrator) {
+        if (!hasAccess) {
           await interaction.reply({
-            content: "⛔ Only Head Admins, Senior Admins, and server administrators can view the full birthday register.",
+            content: "⛔ Only Head Admins, Senior Admins, the Moderation Lead, Moderators, and server administrators can view the full birthday register.",
             flags: MessageFlags.Ephemeral,
           });
           return;
@@ -384,6 +403,13 @@ client.on("interactionCreate", async interaction => {
       }
 
       if (interaction.commandName === "birthday-remove") {
+        if (!await hasBirthdayStaffAccess(interaction)) {
+          await interaction.reply({
+            content: "⛔ Only Head Admins, Senior Admins, the Moderation Lead, Moderators, and server administrators can use this command.",
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
         const user = interaction.options.getUser("member", true);
         if (!birthdays[user.id]) {
           await interaction.reply({ content: "That member does not have a registered birthday.", flags: MessageFlags.Ephemeral });
