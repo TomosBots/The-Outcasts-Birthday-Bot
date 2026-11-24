@@ -313,16 +313,20 @@ client.once("ready", async () => {
   setInterval(() => sendTodaysBirthdays().catch(console.error), 60_000);
 });
 
+const TRIAL_MODERATOR_ROLE_ID = "1574576294488838296";
+
 const AUTHORISED_STAFF_ROLES = [
   "Head Admin",
   "Senior Admins",
   "Moderation Lead",
   "Moderators",
+  "Trial Moderators",
 ];
 
 async function hasBirthdayStaffAccess(interaction) {
   const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
   const hasAuthorisedRole = Boolean(
+    member?.roles?.cache?.has(TRIAL_MODERATOR_ROLE_ID) ||
     member?.roles?.cache?.some(role => AUTHORISED_STAFF_ROLES.includes(role.name))
   );
   const isServerAdministrator = Boolean(
